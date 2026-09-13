@@ -182,13 +182,21 @@ def resolve_stock(feed_sku, variants_by_sku):
 def build_xml(variants_by_sku):
     root = ET.Element("products")
     for row in load_feed_rows():
+        stock = resolve_stock(row["sku"], variants_by_sku)
+
+        # Business rule:
+        # If the item is available at the main warehouse
+        # "Cēsu iela 18, Veikals", collectionhours is always 24.
+        # Other warehouse lead times will be added separately later.
+        collectionhours = "24" if stock > 0 else row["hours"]
+
         p = ET.SubElement(root, "product")
         ET.SubElement(p, "sku").text = row["sku"]
         ET.SubElement(p, "ean").text = row["ean"]
         ET.SubElement(p, "price-before-discount").text = row["before"]
         ET.SubElement(p, "price-after-discount").text = row["after"]
-        ET.SubElement(p, "stock").text = str(resolve_stock(row["sku"], variants_by_sku))
-        ET.SubElement(p, "collectionhours").text = row["hours"]
+        ET.SubElement(p, "stock").text = str(stock)
+        ET.SubElement(p, "collectionhours").text = collectionhours
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
