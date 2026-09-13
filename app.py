@@ -18,6 +18,12 @@ SHOPIFY_API_VERSION = os.environ.get("SHOPIFY_API_VERSION", "2026-07").strip()
 MAIN_LOCATION_ID = os.environ.get(
     "SHOPIFY_MAIN_LOCATION_ID", "gid://shopify/Location/84891861330"
 ).strip()
+LOWA_LOCATION_ID = os.environ.get(
+    "SHOPIFY_LOWA_LOCATION_ID", "gid://shopify/Location/107817075026"
+).strip()
+FJORD_LOCATION_ID = os.environ.get(
+    "SHOPIFY_FJORD_LOCATION_ID", "gid://shopify/Location/107805770066"
+).strip()
 FEED_CSV = os.environ.get("FEED_CSV", os.path.join(os.path.dirname(__file__), "sia_fhm.csv"))
 CACHE_SECONDS = int(os.environ.get("CACHE_SECONDS", "300"))
 
@@ -25,14 +31,20 @@ _cache = {"ts": 0, "variants": None}
 _token_cache = {"token": None, "expires_at": 0}
 
 QUERY = """
-query VariantsFor220($after: String, $locationId: ID!) {
+query VariantsForOutfish($after: String, $mainId: ID!, $lowaId: ID!, $fjordId: ID!) {
   productVariants(first: 250, after: $after) {
     nodes {
       sku
       product { status }
       inventoryItem {
-        inventoryLevel(locationId: $locationId) {
-          quantities(names: [\"available\"]) { quantity }
+        main: inventoryLevel(locationId: $mainId) {
+          quantities(names: ["available"]) { quantity }
+        }
+        lowa: inventoryLevel(locationId: $lowaId) {
+          quantities(names: ["available"]) { quantity }
+        }
+        fjord: inventoryLevel(locationId: $fjordId) {
+          quantities(names: ["available"]) { quantity }
         }
       }
     }
@@ -130,7 +142,15 @@ def fetch_shopify_variants():
     by_sku = defaultdict(list)
     after = None
     while True:
-        payload = {"query": QUERY, "variables": {"after": after, "locationId": MAIN_LOCATION_ID}}
+        payload = {
+            "query": QUERY,
+            "variables": {
+                "after": after,
+                "mainId": MAIN_LOCATION_ID,
+                "lowaId": LOWA_LOCATION_ID,
+                "fjordId": FJORD_LOCATION_ID,
+            },
+        }
         r = requests.post(url, headers=headers, json=payload, timeout=30)
         r.raise_for_status()
         body = r.json()
@@ -142,10 +162,20 @@ def fetch_shopify_variants():
             if not sku:
                 continue
             status = (node.get("product") or {}).get("status", "")
-            level = ((node.get("inventoryItem") or {}).get("inventoryLevel") or {})
-            quantities = level.get("quantities") or []
-            available = quantities[0].get("quantity", 0) if quantities else 0
-            by_sku[sku].append({"status": status, "available": _num(available)})
+            inventory_item = node.get("inventoryItem") or {}
+
+            def qty(alias):
+                level = inventory_item.get(alias) or {}
+                quantities = level.get("quantities") or []
+                return _num(quantities[0].get("quantity", 0) if quantities else 0)
+
+            by_sku[sku].append({
+                "status": status,
+                "available": qty("main"),
+                "main": qty("main"),
+                "lowa": qty("lowa"),
+                "fjord": qty("fjord"),
+            })
         if not conn["pageInfo"]["hasNextPage"]:
             break
         after = conn["pageInfo"]["endCursor"]
@@ -179,24 +209,59 @@ def resolve_stock(feed_sku, variants_by_sku):
     return max(0, _num(chosen["available"]))
 
 
+def resolve_variant(feed_sku, variants_by_sku):
+    lookup = (feed_sku or "").strip()
+    matches = variants_by_sku.get(lookup, [])
+
+    if not matches and lookup.endswith("-OneSize"):
+        lookup = lookup[:-8]
+        matches = variants_by_sku.get(lookup, [])
+
+    if not matches:
+        return None
+
+    active = [x for x in matches if str(x["status"]).upper() == "ACTIVE"]
+    if len(active) == 1:
+        return active[0]
+
+    if len(matches) == 1 and str(matches[0]["status"]).upper() == "ACTIVE":
+        return matches[0]
+
+    return None
+
+
+def storefront_availability(sku, variants_by_sku):
+    variant = resolve_variant(sku, variants_by_sku)
+
+    if not variant:
+        return {"status": "unavailable", "hours": None, "source": None, "stock": 0}
+
+    main = max(0, _num(variant.get("main")))
+    lowa = max(0, _num(variant.get("lowa")))
+    fjord = max(0, _num(variant.get("fjord")))
+
+    if main > 0:
+        return {"status": "store", "hours": 24, "source": "store", "stock": main}
+
+    if lowa > 0:
+        return {"status": "lowa", "hours": 48, "source": "lowa", "stock": lowa}
+
+    if fjord > 0:
+        return {"status": "fjord", "hours": 72, "source": "fjord", "stock": fjord}
+
+    return {"status": "unavailable", "hours": None, "source": None, "stock": 0}
+
+
 def build_xml(variants_by_sku):
     root = ET.Element("products")
     for row in load_feed_rows():
-        stock = resolve_stock(row["sku"], variants_by_sku)
-
-        # Business rule:
-        # If the item is available at the main warehouse
-        # "Cēsu iela 18, Veikals", collectionhours is always 24.
-        # Other warehouse lead times will be added separately later.
-        collectionhours = "24" if stock > 0 else row["hours"]
-
         p = ET.SubElement(root, "product")
         ET.SubElement(p, "sku").text = row["sku"]
         ET.SubElement(p, "ean").text = row["ean"]
         ET.SubElement(p, "price-before-discount").text = row["before"]
         ET.SubElement(p, "price-after-discount").text = row["after"]
-        ET.SubElement(p, "stock").text = str(stock)
-        ET.SubElement(p, "collectionhours").text = collectionhours
+        ET.SubElement(p, "stock").text = str(resolve_stock(row["sku"], variants_by_sku))
+        ET.SubElement(p, "collectionhours").text = row["hours"]
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
@@ -214,6 +279,29 @@ def feed():
     except Exception as e:
         # Never return a partial/invalid feed to the marketplace.
         return Response(f"Feed generation error: {e}\n", status=503, mimetype="text/plain")
+
+
+@app.get("/availability")
+def availability():
+    from flask import request, jsonify
+
+    sku = (request.args.get("sku") or "").strip()
+    if not sku:
+        response = jsonify({"error": "sku is required"})
+        response.status_code = 400
+    else:
+        try:
+            variants = fetch_shopify_variants()
+            result = storefront_availability(sku, variants)
+            result["sku"] = sku
+            response = jsonify(result)
+        except Exception as e:
+            response = jsonify({"error": str(e)})
+            response.status_code = 503
+
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Cache-Control"] = "public, max-age=60"
+    return response
 
 
 @app.get("/health")
