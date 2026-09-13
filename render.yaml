@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: outfish-220-stock-feed
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: SHOPIFY_STORE
+        value: 153ac6-2.myshopify.com
+      - key: SHOPIFY_API_VERSION
+        value: 2026-07
+      - key: SHOPIFY_MAIN_LOCATION_ID
+        value: gid://shopify/Location/84891861330
+      - key: CACHE_SECONDS
+        value: 300
+      - key: SHOPIFY_ACCESS_TOKEN
+        sync: false
