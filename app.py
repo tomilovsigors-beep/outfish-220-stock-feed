@@ -12,7 +12,8 @@ from flask import Flask, Response
 app = Flask(__name__)
 
 SHOPIFY_STORE = os.environ.get("SHOPIFY_STORE", "153ac6-2.myshopify.com").strip()
-SHOPIFY_ACCESS_TOKEN = os.environ.get("SHOPIFY_ACCESS_TOKEN", "").strip()
+SHOPIFY_CLIENT_ID = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
+SHOPIFY_CLIENT_SECRET = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
 SHOPIFY_API_VERSION = os.environ.get("SHOPIFY_API_VERSION", "2026-07").strip()
 MAIN_LOCATION_ID = os.environ.get(
     "SHOPIFY_MAIN_LOCATION_ID", "gid://shopify/Location/84891861330"
@@ -21,6 +22,7 @@ FEED_CSV = os.environ.get("FEED_CSV", os.path.join(os.path.dirname(__file__), "s
 CACHE_SECONDS = int(os.environ.get("CACHE_SECONDS", "300"))
 
 _cache = {"ts": 0, "variants": None}
+_token_cache = {"token": None, "expires_at": 0}
 
 QUERY = """
 query VariantsFor220($after: String, $locationId: ID!) {
@@ -80,17 +82,48 @@ def load_feed_rows():
     return rows
 
 
+def get_shopify_access_token():
+    now = time.time()
+    cached = _token_cache.get("token")
+    # Refresh five minutes before Shopify says the token expires.
+    if cached and now < _token_cache.get("expires_at", 0) - 300:
+        return cached
+
+    if not SHOPIFY_CLIENT_ID or not SHOPIFY_CLIENT_SECRET:
+        raise RuntimeError("SHOPIFY_CLIENT_ID / SHOPIFY_CLIENT_SECRET are not configured")
+
+    token_url = f"https://{SHOPIFY_STORE}/admin/oauth/access_token"
+    r = requests.post(
+        token_url,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": SHOPIFY_CLIENT_ID,
+            "client_secret": SHOPIFY_CLIENT_SECRET,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    body = r.json()
+    token = (body.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Shopify did not return an access token")
+
+    expires_in = int(body.get("expires_in") or 86399)
+    _token_cache["token"] = token
+    _token_cache["expires_at"] = now + expires_in
+    return token
+
+
 def fetch_shopify_variants():
     now = time.time()
     if _cache["variants"] is not None and now - _cache["ts"] < CACHE_SECONDS:
         return _cache["variants"]
 
-    if not SHOPIFY_ACCESS_TOKEN:
-        raise RuntimeError("SHOPIFY_ACCESS_TOKEN is not configured")
-
+    access_token = get_shopify_access_token()
     url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
     headers = {
-        "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
+        "X-Shopify-Access-Token": access_token,
         "Content-Type": "application/json",
     }
 
