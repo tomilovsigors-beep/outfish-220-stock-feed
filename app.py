@@ -307,3 +307,26 @@ def availability():
 @app.get("/health")
 def health():
     return {"ok": True}, 200
+
+
+@app.get("/inventory-export.json")
+def inventory_export():
+    from flask import jsonify
+    try:
+        variants = fetch_shopify_variants()
+        rows = []
+        for sku, matches in variants.items():
+            for item in matches:
+                rows.append({
+                    "sku": sku,
+                    "status": item.get("status"),
+                    "available": max(0, _num(item.get("available"))),
+                    "main": max(0, _num(item.get("main"))),
+                    "lowa": max(0, _num(item.get("lowa"))),
+                    "fjord": max(0, _num(item.get("fjord"))),
+                })
+        return jsonify({"count": len(rows), "variants": rows})
+    except Exception as e:
+        response = jsonify({"error": str(e)})
+        response.status_code = 503
+        return response
