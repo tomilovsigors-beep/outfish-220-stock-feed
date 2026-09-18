@@ -330,3 +330,35 @@ def inventory_export():
         response = jsonify({"error": str(e)})
         response.status_code = 503
         return response
+
+
+# One-shot read-only inventory export to Render logs for controlled Master sync.
+def _maybe_export_master_stock_once():
+    if os.environ.get("RUN_MASTER_STOCK_EXPORT", "").strip() != "1":
+        return
+    try:
+        variants = fetch_shopify_variants()
+        rows = []
+        for sku in sorted(variants):
+            for item in variants[sku]:
+                rows.append({
+                    "sku": sku,
+                    "status": item.get("status"),
+                    "available": max(0, _num(item.get("available"))),
+                    "main": max(0, _num(item.get("main"))),
+                    "lowa": max(0, _num(item.get("lowa"))),
+                    "fjord": max(0, _num(item.get("fjord"))),
+                })
+        chunk_size = 200
+        total = (len(rows) + chunk_size - 1) // chunk_size
+        for i in range(total):
+            chunk = rows[i*chunk_size:(i+1)*chunk_size]
+            print("MASTER_STOCK_EXPORT_CHUNK " + str(i+1) + "/" + str(total) + " " + __import__("json").dumps(chunk, separators=(",", ":")), flush=True)
+        print("MASTER_STOCK_EXPORT_DONE " + str(len(rows)), flush=True)
+    except Exception as e:
+        print("MASTER_STOCK_EXPORT_FAILED " + type(e).__name__ + " " + str(e), flush=True)
+
+try:
+    _maybe_export_master_stock_once()
+except Exception:
+    pass
