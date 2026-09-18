@@ -34,6 +34,7 @@ QUERY = """
 query VariantsForOutfish($after: String, $mainId: ID!, $lowaId: ID!, $fjordId: ID!) {
   productVariants(first: 250, after: $after) {
     nodes {
+      id
       sku
       product { status }
       inventoryItem {
@@ -170,6 +171,7 @@ def fetch_shopify_variants():
                 return _num(quantities[0].get("quantity", 0) if quantities else 0)
 
             by_sku[sku].append({
+                "id": node.get("id"),
                 "status": status,
                 "available": qty("main"),
                 "main": qty("main"),
@@ -319,6 +321,7 @@ def inventory_export():
             for item in matches:
                 rows.append({
                     "sku": sku,
+                    "id": item.get("id"),
                     "status": item.get("status"),
                     "available": max(0, _num(item.get("available"))),
                     "main": max(0, _num(item.get("main"))),
