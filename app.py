@@ -24,6 +24,9 @@ LOWA_LOCATION_ID = os.environ.get(
 FJORD_LOCATION_ID = os.environ.get(
     "SHOPIFY_FJORD_LOCATION_ID", "gid://shopify/Location/107805770066"
 ).strip()
+GEDIMINAS_LOCATION_ID = os.environ.get(
+    "SHOPIFY_GEDIMINAS_LOCATION_ID", "gid://shopify/Location/128849346898"
+).strip()
 FEED_CSV = os.environ.get("FEED_CSV", os.path.join(os.path.dirname(__file__), "sia_fhm.csv"))
 CACHE_SECONDS = int(os.environ.get("CACHE_SECONDS", "300"))
 
@@ -31,7 +34,7 @@ _cache = {"ts": 0, "variants": None}
 _token_cache = {"token": None, "expires_at": 0}
 
 QUERY = """
-query VariantsForOutfish($after: String, $mainId: ID!, $lowaId: ID!, $fjordId: ID!) {
+query VariantsForOutfish($after: String, $mainId: ID!, $lowaId: ID!, $fjordId: ID!, $gediminasId: ID!) {
   productVariants(first: 250, after: $after) {
     nodes {
       id
@@ -45,6 +48,9 @@ query VariantsForOutfish($after: String, $mainId: ID!, $lowaId: ID!, $fjordId: I
           quantities(names: ["available"]) { quantity }
         }
         fjord: inventoryLevel(locationId: $fjordId) {
+          quantities(names: ["available"]) { quantity }
+        }
+        gediminas: inventoryLevel(locationId: $gediminasId) {
           quantities(names: ["available"]) { quantity }
         }
       }
@@ -150,6 +156,7 @@ def fetch_shopify_variants():
                 "mainId": MAIN_LOCATION_ID,
                 "lowaId": LOWA_LOCATION_ID,
                 "fjordId": FJORD_LOCATION_ID,
+                "gediminasId": GEDIMINAS_LOCATION_ID,
             },
         }
         r = requests.post(url, headers=headers, json=payload, timeout=30)
@@ -177,6 +184,7 @@ def fetch_shopify_variants():
                 "main": qty("main"),
                 "lowa": qty("lowa"),
                 "fjord": qty("fjord"),
+                "gediminas": qty("gediminas"),
             })
         if not conn["pageInfo"]["hasNextPage"]:
             break
@@ -241,6 +249,7 @@ def storefront_availability(sku, variants_by_sku):
     main = max(0, _num(variant.get("main")))
     lowa = max(0, _num(variant.get("lowa")))
     fjord = max(0, _num(variant.get("fjord")))
+    gediminas = max(0, _num(variant.get("gediminas")))
 
     if main > 0:
         return {"status": "store", "hours": 24, "source": "store", "stock": main}
@@ -250,6 +259,12 @@ def storefront_availability(sku, variants_by_sku):
 
     if fjord > 0:
         return {"status": "fjord", "hours": 72, "source": "fjord", "stock": fjord}
+
+    if gediminas > 0:
+        # The published theme already maps "fjord" to the approved 3–5 day
+        # promise in all three languages. Keep that response contract while
+        # preserving the actual inventory source separately.
+        return {"status": "fjord", "hours": 72, "source": "gediminas", "stock": gediminas}
 
     return {"status": "unavailable", "hours": None, "source": None, "stock": 0}
 
